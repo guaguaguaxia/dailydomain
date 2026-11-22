@@ -295,10 +295,10 @@ export function renderAppPage(initialDay?: string): string {
       align-items: center;
       gap: 6px;
       flex: 1;
-      max-width: 440px;
+      max-width: 520px;
       min-width: 240px;
     }
-    .global-search input {
+    .global-search input[type="search"] {
       width: 100%;
       padding: 7px 12px;
       border: 1px solid var(--border-strong);
@@ -306,7 +306,50 @@ export function renderAppPage(initialDay?: string): string {
       background: var(--bg);
       outline: none;
     }
-    .global-search input:focus { border-color: var(--accent); background: #fff; }
+    .global-search input[type="search"]:focus { border-color: var(--accent); background: #fff; }
+    .regex-toggle {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      padding: 6px 10px;
+      border: 1px solid var(--border-strong);
+      border-radius: 8px;
+      background: var(--surface);
+      color: var(--text-muted);
+      font-size: 12px;
+      font-family: var(--mono);
+      cursor: pointer;
+      white-space: nowrap;
+      user-select: none;
+      transition: background 0.15s, border-color 0.15s, color 0.15s;
+    }
+    .regex-toggle input { margin: 0; accent-color: var(--accent); cursor: pointer; }
+    .regex-toggle:has(input:checked) {
+      background: var(--accent-soft);
+      border-color: var(--accent);
+      color: var(--accent);
+      font-weight: 600;
+    }
+    .regex-hints {
+      display: none;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 6px;
+      font-size: 12px;
+      color: var(--text-muted);
+    }
+    .regex-hints.open { display: flex; }
+    .regex-chip {
+      padding: 2px 8px;
+      border-radius: 6px;
+      border: 1px solid var(--border);
+      background: #fff;
+      font-family: var(--mono);
+      font-size: 11px;
+      color: var(--text);
+      cursor: pointer;
+    }
+    .regex-chip:hover { border-color: var(--accent); color: var(--accent); }
     .top-actions { display: flex; align-items: center; gap: 8px; }
     .container {
       max-width: 1440px;
@@ -638,6 +681,7 @@ export function renderAppPage(initialDay?: string): string {
     </div>
     <form id="globalSearchForm" class="global-search">
       <input id="globalSearchInput" type="search" placeholder="跨天全局搜索域名关键词（至少 2 个字符，如 openai）" />
+      <label class="regex-toggle" title="启用正则表达式跨天搜索"><input id="globalRegexCheck" type="checkbox" /><span>正则</span></label>
       <button type="submit" class="btn btn-primary">全局搜索</button>
     </form>
     <div class="top-actions">
@@ -731,6 +775,7 @@ export function renderAppPage(initialDay?: string): string {
           <div class="filters-box">
             <div class="filter-row">
               <input id="filterQuery" type="text" placeholder="当天关键词过滤（如 ai / cloud）" style="flex:1;min-width:180px;" />
+              <label class="regex-toggle" title="启用正则表达式过滤当天域名"><input id="filterRegexCheck" type="checkbox" /><span>正则</span></label>
               <input id="filterTld" type="text" placeholder="后缀 TLD（如 com / ai）" style="width:150px;" />
               <input id="filterPrefix" type="text" placeholder="前缀（如 a / shop）" style="width:150px;" />
               <select id="pageSizeSelect" aria-label="每页数量">
@@ -741,6 +786,13 @@ export function renderAppPage(initialDay?: string): string {
               </select>
               <button type="button" id="applyFiltersBtn" class="btn btn-primary btn-sm">筛选</button>
               <button type="button" id="resetFiltersBtn" class="btn btn-sm">重置</button>
+            </div>
+            <div id="regexHints" class="regex-hints">
+              <span>正则示例：</span>
+              <button type="button" class="regex-chip" data-regex="^[a-z]{4}\\.ai$">4字母.ai</button>
+              <button type="button" class="regex-chip" data-regex="^\\d{4,6}\\.com$">纯数字.com</button>
+              <button type="button" class="regex-chip" data-regex="([a-z0-9])\\1{2}">3连叠字</button>
+              <button type="button" class="regex-chip" data-regex="^(ai|gpt|agent).*\\.com$">AI前缀.com</button>
             </div>
             <div id="alphaBar" class="alpha-bar"></div>
           </div>
@@ -809,6 +861,7 @@ export function renderAppPage(initialDay?: string): string {
       page: 1,
       pageSize: 100,
       q: "",
+      regex: false,
       tld: "",
       prefix: "",
       totalPages: 1,
@@ -1012,7 +1065,10 @@ export function renderAppPage(initialDay?: string): string {
         page: String(state.page),
         pageSize: String(state.pageSize),
       });
-      if (state.q) qs.set("q", state.q);
+      if (state.q) {
+        qs.set("q", state.q);
+        if (state.regex) qs.set("regex", "1");
+      }
       if (state.tld) qs.set("tld", state.tld);
       if (state.prefix) qs.set("prefix", state.prefix);
 
@@ -1060,26 +1116,53 @@ export function renderAppPage(initialDay?: string): string {
       }
     }
 
+    function validateClientRegex(raw) {
+      let pat = raw.trim();
+      const m = pat.match(new RegExp("^/(.+)/([a-z]*)$", "i"));
+      if (m) {
+        if (!/^i?$/i.test(m[2])) {
+          return "仅支持 i 标志或直接输入表达式，无需 g/m 等标志";
+        }
+        pat = m[1];
+      }
+      if (!pat) return "正则表达式不能为空";
+      if (pat.length > 120) return "正则表达式长度不能超过 120 个字符";
+      try {
+        new RegExp(pat, "i");
+        return "";
+      } catch (e) {
+        return "正则表达式语法错误: " + e.message;
+      }
+    }
+
     async function runGlobalSearch(q) {
-      const trimmed = q.trim().toLowerCase();
-      if (trimmed.length < 2) {
+      const useRegex = $("globalRegexCheck").checked;
+      const trimmed = useRegex ? q.trim() : q.trim().toLowerCase();
+      if (useRegex) {
+        const err = validateClientRegex(trimmed);
+        if (err) {
+          showToast(err);
+          return;
+        }
+      } else if (trimmed.length < 2) {
         showToast("全局搜索请至少输入 2 个字符");
         return;
       }
       state.globalMode = true;
       $("dayWorkspacePanel").style.display = "none";
       $("globalSearchPanel").style.display = "block";
-      $("globalResultTitle").textContent = "全局搜索：" + trimmed;
+      $("globalResultTitle").textContent = (useRegex ? "全局正则搜索：" : "全局搜索：") + trimmed;
       $("globalResultMeta").textContent = "正在跨天检索...";
       $("globalDaySummary").innerHTML = "";
       $("globalResultBody").innerHTML = '<tr><td colspan="4" class="empty-state">检索中...</td></tr>';
 
       const qs = new URLSearchParams({ q: trimmed, limit: "150" });
+      if (useRegex) qs.set("regex", "1");
       if (state.tld) qs.set("tld", state.tld);
       const res = await apiFetch("/api/search?" + qs.toString());
 
       $("globalResultMeta").textContent =
-        "返回 " + fmtNum(res.totalReturned) + " 条匹配" + (res.truncated ? "（已达展示上限，请细化关键词）" : "");
+        "返回 " + fmtNum(res.totalReturned) + " 条匹配" + (res.truncated ? "（已达展示上限或扫描超时，请细化规则）" : "");
       $("globalDaySummary").innerHTML = (res.perDayCounts || [])
         .map((d) => '<span class="tld-chip" data-jump-day="' + esc(d.day) + '">' + esc(d.day) + ' <span class="tld-chip-cnt">' + fmtNum(d.count) + '</span></span>')
         .join("");
@@ -1107,13 +1190,26 @@ export function renderAppPage(initialDay?: string): string {
       const qs = new URLSearchParams({ format });
       if (format !== "zip") {
         if (state.tld) qs.set("tld", state.tld);
-        if (state.q) qs.set("q", state.q);
+        if (state.q) {
+          qs.set("q", state.q);
+          if (state.regex) qs.set("regex", "1");
+        }
       }
       window.location.assign("/api/days/" + encodeURIComponent(state.selectedDay) + "/download?" + qs.toString());
     }
 
     function applyFilterInputs(resetPage = true) {
-      state.q = $("filterQuery").value.trim().toLowerCase();
+      const useRegex = $("filterRegexCheck").checked;
+      const rawQ = $("filterQuery").value.trim();
+      if (useRegex && rawQ) {
+        const err = validateClientRegex(rawQ);
+        if (err) {
+          showToast(err);
+          return;
+        }
+      }
+      state.regex = useRegex;
+      state.q = useRegex ? rawQ : rawQ.toLowerCase();
       state.tld = $("filterTld").value.trim().toLowerCase().replace(/^\\.+/, "");
       state.prefix = $("filterPrefix").value.trim().toLowerCase();
       state.pageSize = Number($("pageSizeSelect").value) || 100;
@@ -1185,6 +1281,30 @@ export function renderAppPage(initialDay?: string): string {
 
     $("applyFiltersBtn").addEventListener("click", () => applyFilterInputs(true));
     $("pageSizeSelect").addEventListener("change", () => applyFilterInputs(true));
+    $("globalRegexCheck").addEventListener("change", () => {
+      $("globalSearchInput").placeholder = $("globalRegexCheck").checked
+        ? "跨天正则搜索（如 ^[a-z]{4}\\\\.ai$ 或 ^(ai|gpt).*\\\\.com$）"
+        : "跨天全局搜索域名关键词（至少 2 个字符，如 openai）";
+    });
+    $("filterRegexCheck").addEventListener("change", () => {
+      const checked = $("filterRegexCheck").checked;
+      state.regex = checked;
+      $("regexHints").classList.toggle("open", checked);
+      $("filterQuery").placeholder = checked
+        ? "输入正则表达式（如 ^[a-z]{4}\\\\.ai$ 或 ^\\\\d{4,6}\\\\.com$）"
+        : "当天关键词过滤（如 ai / cloud）";
+      if ($("filterQuery").value.trim()) {
+        applyFilterInputs(true);
+      }
+    });
+    $("regexHints").addEventListener("click", (e) => {
+      const chip = e.target.closest("[data-regex]");
+      if (!chip) return;
+      $("filterRegexCheck").checked = true;
+      $("regexHints").classList.add("open");
+      $("filterQuery").value = chip.dataset.regex || "";
+      applyFilterInputs(true);
+    });
     ["filterQuery", "filterTld", "filterPrefix"].forEach((id) => {
       $(id).addEventListener("keydown", (e) => {
         if (e.key === "Enter") {
@@ -1196,9 +1316,13 @@ export function renderAppPage(initialDay?: string): string {
 
     $("resetFiltersBtn").addEventListener("click", () => {
       state.q = "";
+      state.regex = false;
       state.tld = "";
       state.prefix = "";
       state.page = 1;
+      $("filterRegexCheck").checked = false;
+      $("regexHints").classList.remove("open");
+      $("filterQuery").placeholder = "当天关键词过滤（如 ai / cloud）";
       $("filterQuery").value = "";
       $("filterTld").value = "";
       $("filterPrefix").value = "";

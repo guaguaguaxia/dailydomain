@@ -44,9 +44,9 @@
 | `POST /api/auth/logout` | 清除会话 Cookie | 公开 |
 | `GET /api/overview` | 获取已收录天数、总域名数、每日批次与 Top TLD | 需鉴权 |
 | `GET /api/days/:date` | 获取指定日期（`YYYY-MM-DD`）汇总及 Top 40 TLD | 需鉴权 |
-| `GET /api/days/:date/domains` | 分页/筛选查询当日域名（`q`、`tld`、`prefix`、`page`、`pageSize`） | 需鉴权 |
-| `GET /api/days/:date/download` | 流式下载（`format=txt|csv|zip`，TXT/CSV 支持 `tld`、`q` 过滤） | 需鉴权 |
-| `GET /api/search` | 跨天关键词全局搜索（`q`、`tld`、`limit`） | 需鉴权 |
+| `GET /api/days/:date/domains` | 分页/筛选查询当日域名（`q`、`tld`、`prefix`、`regex=1`、`page`、`pageSize`） | 需鉴权 |
+| `GET /api/days/:date/download` | 流式下载（`format=txt\|csv\|zip`，TXT/CSV 支持 `tld`、`q`、`regex=1` 过滤） | 需鉴权 |
+| `GET /api/search` | 跨天关键词或正则全局搜索（`q`、`tld`、`regex=1`、`limit`） | 需鉴权 |
 | `POST /api/sync` | 手动同步或强制重拉（Body: `{ date?, dates?, force? }`） | 需鉴权 |
 
 ## 密钥管理与密码轮换

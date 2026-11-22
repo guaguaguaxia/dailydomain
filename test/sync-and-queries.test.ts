@@ -1,6 +1,9 @@
 import { deflateRawSync } from "node:zlib";
 import { describe, expect, it, vi } from "vitest";
 import {
+  InvalidRegexError,
+  compileDomainRegex,
+  extractRegexHints,
   getDayDetail,
   getOverview,
   queryDayDomains,
@@ -482,8 +485,101 @@ describe("syncDay and queries integration", () => {
       const zipBuf = new Uint8Array(await zipResp.arrayBuffer());
       expect(zipBuf[0]).toBe(0x50);
       expect(zipBuf[1]).toBe(0x4b);
+
+      // Single-day regex query + combined tld/prefix
+      const regexDay = await queryDayDomains(env, "2026-11-21", {
+        q: "^openai-0[036]\\.ai$",
+        regex: true,
+        page: 1,
+        pageSize: 20,
+      });
+      expect(regexDay?.total).toBe(3);
+      expect(regexDay?.items.map((i) => i.domain)).toEqual([
+        "openai-00.ai",
+        "openai-03.ai",
+        "openai-06.ai",
+      ]);
+
+      const regexWithPrefix = await queryDayDomains(env, "2026-11-21", {
+        q: "^site-\\d{2}\\.com$",
+        prefix: "site-1",
+        regex: true,
+        pageSize: 20,
+      });
+      expect(regexWithPrefix?.total).toBe(7);
+      expect(regexWithPrefix?.items[0].domain).toBe("site-10.com");
+
+      // Preserves uppercase regex escapes like \D
+      const uppercaseEscape = await queryDayDomains(env, "2026-11-22", {
+        q: "^\\D+\\.dev$",
+        regex: true,
+        pageSize: 20,
+      });
+      expect(uppercaseEscape?.total).toBe(1);
+      expect(uppercaseEscape?.items[0].domain).toBe("cloudlab.dev");
+
+      // Cross-day regex search
+      const regexCross = await searchAcrossDays(env, {
+        q: "^(agenthub|openai-next)\\.(ai|com)$",
+        regex: true,
+        limit: 50,
+      });
+      expect(regexCross.regex).toBe(true);
+      expect(regexCross.items.map((i) => i.domain)).toEqual(["agenthub.ai", "openai-next.com"]);
+
+      // Regex download + invalid regex error handling
+      const regexTxtResp = await streamDayDownload(env, "2026-11-21", {
+        format: "txt",
+        q: "^openai-0[036]\\.ai$",
+        regex: true,
+      });
+      expect(regexTxtResp.status).toBe(200);
+      expect(await regexTxtResp.text()).toBe("openai-00.ai\nopenai-03.ai\nopenai-06.ai\n");
+
+      const regexCsvResp = await streamDayDownload(env, "2026-11-22", {
+        format: "csv",
+        q: "^openai-.*\\.com$",
+        regex: true,
+      });
+      expect(await regexCsvResp.text()).toBe("domain,date,tld\nopenai-next.com,2026-11-22,com\n");
+
+      const badRegexDl = await streamDayDownload(env, "2026-11-22", {
+        format: "txt",
+        q: "[unclosed",
+        regex: true,
+      });
+      expect(badRegexDl.status).toBe(400);
     } finally {
       vi.unstubAllGlobals();
     }
+  });
+});
+
+describe("regex compiler and SQL hint extractor", () => {
+  it("compiles valid patterns and rejects unsafe/invalid ones", () => {
+    const c1 = compileDomainRegex("/^openai-\\d+\\.ai$/i");
+    expect(c1.pattern).toBe("^openai-\\d+\\.ai$");
+    expect(c1.regex.test("OpenAI-42.ai")).toBe(true);
+
+    const c2 = compileDomainRegex("^([a-z])\\1{2}\\.com$");
+    expect(c2.regex.test("aaa.com")).toBe(true);
+    expect(c2.regex.test("abc.com")).toBe(false);
+
+    expect(() => compileDomainRegex("")).toThrow(InvalidRegexError);
+    expect(() => compileDomainRegex("[unclosed")).toThrow(InvalidRegexError);
+    expect(() => compileDomainRegex("/abc/g")).toThrow(InvalidRegexError);
+    expect(() => compileDomainRegex("a".repeat(121))).toThrow(InvalidRegexError);
+    expect(() => compileDomainRegex("(a+)+$")).toThrow(InvalidRegexError);
+    expect(() => compileDomainRegex("([a-z]+)*x")).toThrow(InvalidRegexError);
+  });
+
+  it("extracts prefix and TLD pruning hints accurately", () => {
+    expect(extractRegexHints("^openai-\\d+\\.ai$")).toEqual({
+      prefixHint: "openai-",
+      tldHint: "ai",
+    });
+    expect(extractRegexHints("^ab?c")).toEqual({ prefixHint: "a", tldHint: "" });
+    expect(extractRegexHints("^foo|bar\\.com$")).toEqual({ prefixHint: "", tldHint: "" });
+    expect(extractRegexHints("^(ai|gpt)\\.com$")).toEqual({ prefixHint: "", tldHint: "com" });
   });
 });

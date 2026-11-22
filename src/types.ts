@@ -76,6 +76,7 @@ export interface CrossDaySearchItem {
 
 export interface CrossDaySearchResult {
   query: string;
+  regex?: boolean;
   tld: string;
   limit: number;
   totalReturned: number;

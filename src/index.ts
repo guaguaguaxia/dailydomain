@@ -6,6 +6,7 @@ import {
   verifyPassword,
 } from "./auth";
 import {
+  InvalidRegexError,
   getDayDetail,
   getOverview,
   queryDayDomains,
@@ -17,6 +18,12 @@ import type { Env, SyncDayResult } from "./types";
 import { renderAppPage, renderLoginPage, sanitizeNextPath } from "./ui";
 
 const MAX_SYNC_DATES_PER_REQUEST = 7;
+
+function parseBoolParam(val: string | null): boolean {
+  if (!val) return false;
+  const v = val.trim().toLowerCase();
+  return v === "1" || v === "true";
+}
 
 function withSecurityHeaders(response: Response, isDownload = false): Response {
   const headers = new Headers(response.headers);
@@ -147,6 +154,7 @@ async function handleRequest(request: Request, env: Env): Promise<Response> {
       q: url.searchParams.get("q") ?? undefined,
       tld: url.searchParams.get("tld") ?? undefined,
       prefix: url.searchParams.get("prefix") ?? undefined,
+      regex: parseBoolParam(url.searchParams.get("regex")),
       page: Number.isFinite(pageRaw) ? pageRaw : 1,
       pageSize: Number.isFinite(pageSizeRaw) ? pageSizeRaw : 100,
     });
@@ -165,13 +173,18 @@ async function handleRequest(request: Request, env: Env): Promise<Response> {
       format,
       tld: url.searchParams.get("tld") ?? undefined,
       q: url.searchParams.get("q") ?? undefined,
+      regex: parseBoolParam(url.searchParams.get("regex")),
     });
     return withSecurityHeaders(resp, true);
   }
 
   if (method === "GET" && pathname === "/api/search") {
     const q = (url.searchParams.get("q") ?? "").trim();
-    if (q.length < 2) {
+    const regex = parseBoolParam(url.searchParams.get("regex"));
+    if (regex && q.length < 1) {
+      return jsonResponse({ error: "Parameter 'q' is required" }, 400);
+    }
+    if (!regex && q.length < 2) {
       return jsonResponse({ error: "Parameter 'q' must be at least 2 characters" }, 400);
     }
     const limitRaw = Number(url.searchParams.get("limit") ?? "100");
@@ -179,6 +192,7 @@ async function handleRequest(request: Request, env: Env): Promise<Response> {
       q,
       tld: url.searchParams.get("tld") ?? undefined,
       limit: Number.isFinite(limitRaw) ? limitRaw : 100,
+      regex,
     });
     return jsonResponse(result);
   }
@@ -234,6 +248,9 @@ export default {
     try {
       return await handleRequest(request, env);
     } catch (err) {
+      if (err instanceof InvalidRegexError) {
+        return jsonResponse({ error: err.message }, 400);
+      }
       const message = err instanceof Error ? err.message : "Internal server error";
       console.error(
         JSON.stringify({
