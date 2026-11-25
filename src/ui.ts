@@ -709,8 +709,8 @@ export function renderAppPage(initialDay?: string): string {
       </div>
       <div class="kpi-card">
         <div class="kpi-label">定时同步策略</div>
-        <div class="kpi-value" style="font-size:16px;padding-top:4px;">每日自动拉取</div>
-        <div class="kpi-sub mono">UTC 06:15 / 12:15 / 18:15</div>
+        <div class="kpi-value" style="font-size:16px;padding-top:4px;">每日拉取昨日</div>
+        <div class="kpi-sub mono">北京 09:15 / 14:15 (UTC 01:15 / 06:15)</div>
       </div>
     </section>
 
@@ -840,7 +840,7 @@ export function renderAppPage(initialDay?: string): string {
       </div>
       <div class="modal-field" style="display:flex;align-items:center;gap:8px;">
         <input id="syncForceCheck" type="checkbox" />
-        <label for="syncForceCheck" style="margin:0;">强制重新拉取覆盖已完成日期</label>
+        <label for="syncForceCheck" style="margin:0;">先清空已有数据再强制重新拉取</label>
       </div>
       <div style="display:flex;justify-content:flex-end;gap:8px;margin-top:14px;">
         <button type="button" id="closeSyncBtn" class="btn">关闭</button>
@@ -1395,8 +1395,8 @@ export function renderAppPage(initialDay?: string): string {
       window.location.assign("/login");
     });
 
-    const todayStr = new Date().toISOString().slice(0, 10);
-    $("syncStartDate").value = todayStr;
+    const yesterdayStr = new Date(Date.now() - 86400000).toISOString().slice(0, 10);
+    $("syncStartDate").value = yesterdayStr;
 
     $("openSyncBtn").addEventListener("click", () => {
       $("syncLog").style.display = "none";

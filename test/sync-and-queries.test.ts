@@ -10,7 +10,7 @@ import {
   searchAcrossDays,
   streamDayDownload,
 } from "../src/queries";
-import { parseDomainsToChunks, syncDay } from "../src/sync";
+import { parseDomainsToChunks, syncDay, syncScheduledRecentDays } from "../src/sync";
 import type { DailyBatchRow, DomainChunkRow, Env } from "../src/types";
 
 interface TldRow {
@@ -122,6 +122,11 @@ function createInMemoryEnv() {
       for (let i = tlds.length - 1; i >= 0; i--) {
         if (tlds[i].day === day) tlds.splice(i, 1);
       }
+      return [];
+    }
+
+    if (s.startsWith("DELETE FROM daily_batches WHERE day = ?")) {
+      batches.delete(params[0] as string);
       return [];
     }
 
@@ -293,6 +298,9 @@ function createInMemoryEnv() {
           }),
         };
       },
+      async delete(key: string) {
+        r2Store.delete(key);
+      },
     } as unknown as R2Bucket,
     WHOISEXTRACTOR_PID: "10",
     WHOISEXTRACTOR_API_KEY: "test-api-key",
@@ -300,7 +308,7 @@ function createInMemoryEnv() {
     SESSION_SECRET: "test-session-secret",
   } as Env;
 
-  return { env, batches, chunks, r2Store };
+  return { env, batches, chunks, tlds, r2Store };
 }
 
 function makeSimpleDeflatedZip(fileName: string, content: string): Uint8Array {
@@ -549,6 +557,100 @@ describe("syncDay and queries integration", () => {
         regex: true,
       });
       expect(badRegexDl.status).toBe(400);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("clears existing D1 and R2 data before fetching when force=true", async () => {
+    const { env, batches, chunks, tlds, r2Store } = createInMemoryEnv();
+
+    let callCount = 0;
+    let stateDuringSecondFetch: {
+      chunkCount: number;
+      tldCount: number;
+      hasOldR2: boolean;
+      batchStatus: string | undefined;
+      batchTotal: number | undefined;
+    } | null = null;
+
+    const fetchMock = vi.fn(async () => {
+      callCount++;
+      if (callCount === 1) {
+        return new Response(makeSimpleDeflatedZip("dailyupdate.txt", "old1.com\nold2.ai\n"), {
+          status: 200,
+          headers: { "Content-Type": "application/zip", ETag: '"v1"' },
+        });
+      }
+      stateDuringSecondFetch = {
+        chunkCount: chunks.filter((c) => c.day === "2026-11-22").length,
+        tldCount: tlds.filter((t) => t.day === "2026-11-22").length,
+        hasOldR2: r2Store.has("raw/2026/11/2026-11-22.zip"),
+        batchStatus: batches.get("2026-11-22")?.status,
+        batchTotal: batches.get("2026-11-22")?.total_count,
+      };
+      if (callCount === 2) {
+        return new Response(makeSimpleDeflatedZip("dailyupdate.txt", "new1.dev\nnew2.org\nnew3.io\n"), {
+          status: 200,
+          headers: { "Content-Type": "application/zip", ETag: '"v2"' },
+        });
+      }
+      return new Response(JSON.stringify({ error: "No data for this date" }), { status: 404 });
+    });
+
+    vi.stubGlobal("fetch", fetchMock);
+    try {
+      const first = await syncDay(env, "2026-11-22");
+      expect(first.totalCount).toBe(2);
+      expect(r2Store.has("raw/2026/11/2026-11-22.zip")).toBe(true);
+
+      const resync = await syncDay(env, "2026-11-22", { force: true });
+      expect(stateDuringSecondFetch).toEqual({
+        chunkCount: 0,
+        tldCount: 0,
+        hasOldR2: false,
+        batchStatus: "syncing",
+        batchTotal: 0,
+      });
+      expect(resync.status).toBe("completed");
+      expect(resync.totalCount).toBe(3);
+
+      const page = await queryDayDomains(env, "2026-11-22", { page: 1, pageSize: 20 });
+      expect(page?.items.map((i) => i.domain)).toEqual(["new1.dev", "new2.org", "new3.io"]);
+
+      // Force re-sync hitting 404 leaves old data cleared and batch unavailable
+      const missingResync = await syncDay(env, "2026-11-22", { force: true });
+      expect(missingResync.status).toBe("unavailable");
+      expect(chunks.filter((c) => c.day === "2026-11-22")).toHaveLength(0);
+      expect(tlds.filter((t) => t.day === "2026-11-22")).toHaveLength(0);
+      expect(r2Store.has("raw/2026/11/2026-11-22.zip")).toBe(false);
+      expect(batches.get("2026-11-22")?.status).toBe("unavailable");
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("syncScheduledRecentDays only syncs yesterday (UTC) and skips today", async () => {
+    const { env } = createInMemoryEnv();
+    const requestedUrls: string[] = [];
+
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      requestedUrls.push(String(input));
+      return new Response(makeSimpleDeflatedZip("dailyupdate.txt", "yesterday.com\n"), {
+        status: 200,
+        headers: { "Content-Type": "application/zip" },
+      });
+    });
+
+    vi.stubGlobal("fetch", fetchMock);
+    try {
+      const results = await syncScheduledRecentDays(env, Date.parse("2026-11-25T01:15:00Z"));
+      expect(results).toHaveLength(1);
+      expect(results[0].date).toBe("2026-11-24");
+      expect(results[0].status).toBe("completed");
+      expect(requestedUrls).toHaveLength(1);
+      expect(requestedUrls[0]).toContain("date=2026-11-24");
+      expect(requestedUrls[0]).not.toContain("date=2026-11-25");
     } finally {
       vi.unstubAllGlobals();
     }

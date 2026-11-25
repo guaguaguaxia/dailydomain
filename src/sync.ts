@@ -194,6 +194,37 @@ async function upsertStatusRow(
     .run();
 }
 
+async function clearDayData(
+  env: Env,
+  date: string,
+  existingR2Key?: string | null,
+): Promise<void> {
+  const [yyyy, mm] = date.split("-");
+  const defaultR2Key = `raw/${yyyy}/${mm}/${date}.zip`;
+
+  await env.DB.batch([
+    env.DB.prepare("DELETE FROM domain_chunks WHERE day = ?").bind(date),
+    env.DB.prepare("DELETE FROM daily_tld_stats WHERE day = ?").bind(date),
+    env.DB.prepare("DELETE FROM daily_batches WHERE day = ?").bind(date),
+  ]);
+
+  const keys = new Set<string>([defaultR2Key]);
+  if (existingR2Key) {
+    keys.add(existingR2Key);
+  }
+  for (const key of keys) {
+    await env.ARCHIVE.delete(key);
+  }
+
+  console.log(
+    JSON.stringify({
+      event: "sync_cleared_existing",
+      date,
+      r2Keys: Array.from(keys),
+    }),
+  );
+}
+
 /**
  * Fetches, archives to R2, extracts, chunks, and indexes a single date's domains into D1.
  */
@@ -209,7 +240,7 @@ export async function syncDay(
   const startedAt = Date.now();
   const force = Boolean(options.force);
 
-  const existing = await env.DB.prepare(
+  let existing = await env.DB.prepare(
     "SELECT status, total_count, tld_count, chunk_count, zip_size_bytes, raw_size_bytes, r2_key FROM daily_batches WHERE day = ?",
   )
     .bind(date)
@@ -244,6 +275,12 @@ export async function syncDay(
   }
   const pid = env.WHOISEXTRACTOR_PID || "10";
   const upstreamUrl = `https://get.whoisextractor.com/?api=${encodeURIComponent(apiKey)}&pid=${encodeURIComponent(pid)}&date=${date}`;
+
+  if (force) {
+    await clearDayData(env, date, existing?.r2_key);
+    existing = null;
+    await upsertStatusRow(env, date, "syncing", null);
+  }
 
   let res: Response;
   try {
@@ -447,25 +484,22 @@ export async function syncDay(
 }
 
 /**
- * Scheduled cron runner: checks yesterday and today (UTC) so newly published daily files
- * are captured reliably regardless of upstream publish timing.
+ * Scheduled cron runner: syncs yesterday (UTC) so finalized previous-day archives are
+ * captured reliably once upstream stops updating the same-day file.
  */
 export async function syncScheduledRecentDays(env: Env, scheduledTimeMs: number): Promise<SyncDayResult[]> {
   const yesterday = formatUtcDate(scheduledTimeMs - 24 * 60 * 60 * 1000);
-  const today = formatUtcDate(scheduledTimeMs);
   const results: SyncDayResult[] = [];
 
-  for (const day of [yesterday, today]) {
-    try {
-      const res = await syncDay(env, day, { force: false });
-      results.push(res);
-    } catch (err) {
-      const message = err instanceof Error ? err.message : "Unexpected cron error";
-      console.error(JSON.stringify({ event: "cron_day_error", date: day, error: message }));
-      results.push({ date: day, status: "failed", error: message });
-    }
+  try {
+    const res = await syncDay(env, yesterday, { force: false });
+    results.push(res);
+  } catch (err) {
+    const message = err instanceof Error ? err.message : "Unexpected cron error";
+    console.error(JSON.stringify({ event: "cron_day_error", date: yesterday, error: message }));
+    results.push({ date: yesterday, status: "failed", error: message });
   }
 
-  console.log(JSON.stringify({ event: "cron_summary", results }));
+  console.log(JSON.stringify({ event: "cron_summary", target: yesterday, results }));
   return results;
 }

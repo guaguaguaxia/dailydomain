@@ -6,8 +6,8 @@
 
 1. **数据源与自动同步**
    - 对接 WhoisExtractor Daily Domains API（`https://get.whoisextractor.com/?api=<KEY>&pid=10&date=YYYY-MM-DD`）。
-   - Cloudflare Cron Triggers 在 **每日 UTC `06:15`、`12:15`、`18:15`**（`15 6,12,18 * * *`）自动触发 `scheduled` 任务，幂等检查并同步最近两天（昨天与今天 UTC）尚未完成归档的日期，避免因上游发布延迟导致漏拉。
-   - 支持在前端弹窗手动补拉/强制重拉指定日期，或调用 `POST /api/sync`（单次最多 7 天）。
+   - Cloudflare Cron Triggers 在 **每日 UTC `01:15`、`06:15`**（`15 1,6 * * *`，对应北京时间 **`09:15`、`14:15`**）自动触发 `scheduled` 任务，今天仅幂等检查并同步 **昨天（UTC）** 已封版的全量数据；第二班次作为幂等兜底重试（若首班已完成则自动跳过）。
+   - 支持在前端弹窗手动补拉/强制重拉指定日期，或调用 `POST /api/sync`（单次最多 7 天）。当 `force: true` 重拉时，会在请求上游 API 之前先清空该日期在 D1（`domain_chunks`、`daily_tld_stats`、`daily_batches`）与 R2 中的已有归档数据，再重新拉取入库。
 
 2. **分块索引存储（D1 + R2）**
    - **Cloudflare R2 (`dailydomain`)**：按 `raw/YYYY/MM/YYYY-MM-DD.zip` 归档每日原始 ZIP 压缩包，用于零额外计算开销的原包下载及历史溯源。

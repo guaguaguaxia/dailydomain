@@ -34,7 +34,7 @@ export const cloudflareConfig = {
     previewsEnabled: false,
   },
   triggers: {
-    crons: ["15 6,12,18 * * *"],
+    crons: ["15 1,6 * * *"],
   },
   bindings: {
     d1: [
